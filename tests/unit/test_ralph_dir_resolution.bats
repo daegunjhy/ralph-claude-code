@@ -70,3 +70,111 @@ teardown() {
     [ "$status" -eq 0 ]
     echo "$output" | grep -q "^RALPH_DIR=\.ralph$"
 }
+
+# --- .ralphrc-sourced RALPH_DIR (#352 follow-up) ----------------------------
+# load_ralphrc() runs far below the Configuration block, so a RALPH_DIR set in
+# .ralphrc used to arrive after every path var had already been derived from
+# ".ralph". ralph_loop.sh now scans .ralphrc for RALPH_DIR before sourcing the
+# libraries. It scans rather than sources, so a .ralphrc guard that calls
+# `exit` cannot take the read path down with it.
+
+@test "ralph_loop.sh honors RALPH_DIR set in .ralphrc when the environment does not set it" {
+    mkdir -p "$TEST_DIR/rc-state"
+    cat > "$TEST_DIR/.ralphrc" <<RC
+PROJECT_NAME="fixture"
+RALPH_DIR="$TEST_DIR/rc-state"
+RC
+    run bash -c "
+        cd '$TEST_DIR'
+        unset RALPH_DIR
+        source '$PROJECT_ROOT/ralph_loop.sh'
+        echo \"RALPH_DIR=\$RALPH_DIR\"
+        echo \"PROMPT_FILE=\$PROMPT_FILE\"
+        echo \"LOG_DIR=\$LOG_DIR\"
+    "
+    [ "$status" -eq 0 ]
+    echo "$output" | grep -q "^RALPH_DIR=$TEST_DIR/rc-state$"
+    echo "$output" | grep -q "^PROMPT_FILE=$TEST_DIR/rc-state/PROMPT.md$"
+    echo "$output" | grep -q "^LOG_DIR=$TEST_DIR/rc-state/logs$"
+}
+
+@test "an exported RALPH_DIR takes precedence over the value in .ralphrc" {
+    mkdir -p "$TEST_DIR/from-env" "$TEST_DIR/from-rc"
+    cat > "$TEST_DIR/.ralphrc" <<RC
+RALPH_DIR="$TEST_DIR/from-rc"
+RC
+    run bash -c "
+        cd '$TEST_DIR'
+        export RALPH_DIR='$TEST_DIR/from-env'
+        source '$PROJECT_ROOT/ralph_loop.sh'
+        echo \"RALPH_DIR=\$RALPH_DIR\"
+    "
+    [ "$status" -eq 0 ]
+    echo "$output" | grep -q "^RALPH_DIR=$TEST_DIR/from-env$"
+}
+
+@test "RALPH_DIR is read from a .ralphrc whose guard exits when sourced too early" {
+    # Mirrors a real workspace: a tripwire above the assignment aborts the shell
+    # unless RALPH_DIR already holds the expected value. Sourcing .ralphrc to
+    # learn RALPH_DIR would therefore yield nothing; scanning it works, and the
+    # guard then passes when load_ralphrc() finally does source the file.
+    mkdir -p "$TEST_DIR/guarded"
+    cat > "$TEST_DIR/.ralphrc" <<RC
+if [[ "\${RALPH_DIR:-}" != "$TEST_DIR/guarded" ]]; then
+    echo "FATAL: RALPH_DIR is '\${RALPH_DIR:-<unset>}'" >&2
+    exit 1
+fi
+RALPH_DIR="$TEST_DIR/guarded"
+RC
+    run bash -c "
+        cd '$TEST_DIR'
+        unset RALPH_DIR
+        source '$PROJECT_ROOT/ralph_loop.sh'
+        load_ralphrc
+        echo \"RALPH_DIR=\$RALPH_DIR\"
+        echo \"CLAUDE_SESSION_FILE=\$CLAUDE_SESSION_FILE\"
+    "
+    [ "$status" -eq 0 ]
+    echo "$output" | grep -q "^RALPH_DIR=$TEST_DIR/guarded$"
+    echo "$output" | grep -q "^CLAUDE_SESSION_FILE=$TEST_DIR/guarded/.claude_session_id$"
+    # the guard must not have fired (count-based: a line-leading bare '!' is a
+    # silent no-op under bats -- see tests/unit/test_bats_hygiene.bats)
+    [[ $(echo "$output" | grep -c "FATAL: RALPH_DIR") -eq 0 ]]
+}
+
+@test "a commented-out RALPH_DIR in .ralphrc is ignored" {
+    cat > "$TEST_DIR/.ralphrc" <<RC
+# RALPH_DIR="$TEST_DIR/should-not-be-used"
+PROJECT_NAME="fixture"
+RC
+    run bash -c "
+        cd '$TEST_DIR'
+        unset RALPH_DIR
+        source '$PROJECT_ROOT/ralph_loop.sh'
+        echo \"RALPH_DIR=\$RALPH_DIR\"
+    "
+    [ "$status" -eq 0 ]
+    echo "$output" | grep -q "^RALPH_DIR=\.ralph$"
+}
+
+@test "a .ralphrc RALPH_DIR keeps ralph_loop.sh and response_analyzer.sh on the same session file" {
+    mkdir -p "$TEST_DIR/rc-state"
+    cat > "$TEST_DIR/.ralphrc" <<RC
+RALPH_DIR="$TEST_DIR/rc-state"
+RC
+    run bash -c "
+        cd '$TEST_DIR'
+        unset RALPH_DIR
+        source '$PROJECT_ROOT/ralph_loop.sh'
+        echo \"CLAUDE_SESSION_FILE=\$CLAUDE_SESSION_FILE\"
+        echo \"SESSION_FILE=\$SESSION_FILE\"
+    "
+    [ "$status" -eq 0 ]
+    local claude_session_file session_file
+    claude_session_file=$(echo "$output" | grep '^CLAUDE_SESSION_FILE=' | cut -d= -f2-)
+    session_file=$(echo "$output" | grep '^SESSION_FILE=' | cut -d= -f2-)
+    [ -n "$claude_session_file" ]
+    [ "$claude_session_file" = "$session_file" ]
+    # Both must land under the .ralphrc directory, not merely agree on ".ralph"
+    [ "$claude_session_file" = "$TEST_DIR/rc-state/.claude_session_id" ]
+}
