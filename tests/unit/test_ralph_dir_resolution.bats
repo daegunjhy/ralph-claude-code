@@ -137,9 +137,12 @@ RC
     [ "$status" -eq 0 ]
     echo "$output" | grep -q "^RALPH_DIR=$TEST_DIR/guarded$"
     echo "$output" | grep -q "^CLAUDE_SESSION_FILE=$TEST_DIR/guarded/.claude_session_id$"
-    # the guard must not have fired (count-based: a line-leading bare '!' is a
-    # silent no-op under bats -- see tests/unit/test_bats_hygiene.bats)
-    [[ $(echo "$output" | grep -c "FATAL: RALPH_DIR") -eq 0 ]]
+    # The guard must not have fired. Asserted via `run` + status so a failure
+    # reports what was actually captured; a line-leading bare '!' would be a
+    # silent no-op under bats (tests/unit/test_bats_hygiene.bats).
+    local captured="$output"
+    run grep -q "FATAL: RALPH_DIR" <<< "$captured"
+    [ "$status" -ne 0 ]
 }
 
 @test "a commented-out RALPH_DIR in .ralphrc is ignored" {
@@ -177,4 +180,24 @@ RC
     [ "$claude_session_file" = "$session_file" ]
     # Both must land under the .ralphrc directory, not merely agree on ".ralph"
     [ "$claude_session_file" = "$TEST_DIR/rc-state/.claude_session_id" ]
+}
+
+@test "a .ralphrc RALPH_DIR containing a shell expansion is refused, not applied literally" {
+    # Applying "$HOME/..." verbatim would derive literal paths here while
+    # load_ralphrc() expands the same assignment later -- the exact split this
+    # block exists to prevent. Fall back to the default and say why instead.
+    cat > "$TEST_DIR/.ralphrc" <<RC
+RALPH_DIR="\$HOME/ralph-state"
+RC
+    run bash -c "
+        cd '$TEST_DIR'
+        unset RALPH_DIR
+        source '$PROJECT_ROOT/ralph_loop.sh'
+        echo \"RALPH_DIR=\$RALPH_DIR\"
+        echo \"PROMPT_FILE=\$PROMPT_FILE\"
+    "
+    [ "$status" -eq 0 ]
+    echo "$output" | grep -q "^RALPH_DIR=\.ralph$"
+    echo "$output" | grep -q "^PROMPT_FILE=\.ralph/PROMPT\.md$"
+    echo "$output" | grep -q "shell expansion"
 }

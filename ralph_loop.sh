@@ -51,7 +51,16 @@ if [[ -z "${RALPH_DIR:-}" && -f ".ralphrc" ]]; then
         -e "s/^[[:space:]]*RALPH_DIR=[[:space:]]*'\([^']*\)'.*/\1/p" \
         -e 's/^[[:space:]]*RALPH_DIR=\([^"'"'"'[:space:]#]\{1,\}\).*/\1/p' \
         ".ralphrc" 2>/dev/null | tail -n 1)
-    if [[ -n "$_rc_ralph_dir" ]]; then
+    if [[ "$_rc_ralph_dir" == *'$'* || "$_rc_ralph_dir" == *'`'* ]]; then
+        # A value carrying a shell expansion cannot be resolved without
+        # evaluating it. Applying it literally would derive paths such as
+        # "$HOME/state/PROMPT.md" here while load_ralphrc() expands the same
+        # assignment later -- reintroducing the very split this block removes.
+        # Leave RALPH_DIR untouched so the paths below keep the .ralph default.
+        echo "WARNING: RALPH_DIR in .ralphrc contains a shell expansion ($_rc_ralph_dir)." >&2
+        echo "         It cannot be applied before the state paths are derived." >&2
+        echo "         Export RALPH_DIR instead, or use a literal path." >&2
+    elif [[ -n "$_rc_ralph_dir" ]]; then
         RALPH_DIR="$_rc_ralph_dir"
     fi
     unset _rc_ralph_dir
