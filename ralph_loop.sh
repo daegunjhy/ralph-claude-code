@@ -48,7 +48,13 @@ source "$SCRIPT_DIR/lib/sandbox_e2b.sh" || { echo "FATAL: Failed to source lib/s
 
 # Configuration
 # Ralph-specific files live in .ralph/ subfolder
-RALPH_DIR=".ralph"
+# Every sourced lib/*.sh reads RALPH_DIR with the env-respecting form
+# ("${RALPH_DIR:-.ralph}"), and they are sourced above (lines 38-47) before
+# this line runs. Resetting to a bare ".ralph" here silently discards an
+# exported RALPH_DIR for every path derived below (PROMPT_FILE, LOG_DIR,
+# STATUS_FILE, CLAUDE_SESSION_FILE, ...), splitting state across two
+# directories. See #352.
+RALPH_DIR="${RALPH_DIR:-.ralph}"
 PROMPT_FILE="$RALPH_DIR/PROMPT.md"
 LOG_DIR="$RALPH_DIR/logs"
 DOCS_DIR="$RALPH_DIR/docs/generated"
