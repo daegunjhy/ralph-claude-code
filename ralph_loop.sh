@@ -95,12 +95,14 @@ _env_DRAFT_PR="${DRAFT_PR:-}"
 _env_CREATE_FOLLOWUPS="${CREATE_FOLLOWUPS:-}"
 _env_FOLLOWUP_LABEL="${FOLLOWUP_LABEL:-}"
 _env_ADD_COMPLETION_LABELS="${ADD_COMPLETION_LABELS:-}"
+_env_RESET_WAIT_MINUTES="${RESET_WAIT_MINUTES:-}"
 
 # Now set defaults (only if not already set by environment)
 MAX_CALLS_PER_HOUR="${MAX_CALLS_PER_HOUR:-100}"
 MAX_TOKENS_PER_HOUR="${MAX_TOKENS_PER_HOUR:-0}"      # 0 = disabled; set to limit cumulative tokens/hour
 VERBOSE_PROGRESS="${VERBOSE_PROGRESS:-false}"
 CLAUDE_TIMEOUT_MINUTES="${CLAUDE_TIMEOUT_MINUTES:-15}"
+RESET_WAIT_MINUTES="${RESET_WAIT_MINUTES:-5}"        # 0 = wait until the top of the next hour (legacy behavior)
 
 # Modern Claude CLI configuration (Phase 1.1)
 CLAUDE_OUTPUT_FORMAT="${CLAUDE_OUTPUT_FORMAT:-json}"
@@ -317,6 +319,7 @@ load_ralphrc() {
     [[ -n "$_env_MAX_CALLS_PER_HOUR" ]] && MAX_CALLS_PER_HOUR="$_env_MAX_CALLS_PER_HOUR"
     [[ -n "$_env_MAX_TOKENS_PER_HOUR" ]] && MAX_TOKENS_PER_HOUR="$_env_MAX_TOKENS_PER_HOUR"
     [[ -n "$_env_CLAUDE_TIMEOUT_MINUTES" ]] && CLAUDE_TIMEOUT_MINUTES="$_env_CLAUDE_TIMEOUT_MINUTES"
+    [[ -n "$_env_RESET_WAIT_MINUTES" ]] && RESET_WAIT_MINUTES="$_env_RESET_WAIT_MINUTES"
     [[ -n "$_env_CLAUDE_OUTPUT_FORMAT" ]] && CLAUDE_OUTPUT_FORMAT="$_env_CLAUDE_OUTPUT_FORMAT"
     [[ -n "$_env_CLAUDE_ALLOWED_TOOLS" ]] && CLAUDE_ALLOWED_TOOLS="$_env_CLAUDE_ALLOWED_TOOLS"
     [[ -n "$_env_CLAUDE_USE_CONTINUE" ]] && CLAUDE_USE_CONTINUE="$_env_CLAUDE_USE_CONTINUE"
@@ -660,19 +663,38 @@ setup_tmux_session() {
 # Initialize call tracking
 init_call_tracking() {
     # Debug logging removed for cleaner output
-    local current_hour=$(date +%Y%m%d%H)
-    local last_reset_hour=""
+    local now_epoch=$(date +%s)
+    local should_reset=false
 
-    if [[ -f "$TIMESTAMP_FILE" ]]; then
-        last_reset_hour=$(cat "$TIMESTAMP_FILE")
+    if [[ "${RESET_WAIT_MINUTES:-0}" -gt 0 ]] 2>/dev/null; then
+        # Configurable rolling window: reset RESET_WAIT_MINUTES minutes after the last reset.
+        local reset_window_secs=$((RESET_WAIT_MINUTES * 60))
+        local last_reset_epoch=0
+        if [[ -f "$TIMESTAMP_FILE" ]]; then
+            local raw_ts=$(cat "$TIMESTAMP_FILE" 2>/dev/null)
+            [[ "$raw_ts" =~ ^[0-9]{10}$ ]] && last_reset_epoch="$raw_ts"
+        fi
+        if [[ $last_reset_epoch -eq 0 ]] || (( now_epoch - last_reset_epoch >= reset_window_secs )); then
+            should_reset=true
+        fi
+    else
+        # Legacy behavior: reset on wall-clock hour boundary.
+        local current_hour=$(date +%Y%m%d%H)
+        local last_reset_hour=""
+        [[ -f "$TIMESTAMP_FILE" ]] && last_reset_hour=$(cat "$TIMESTAMP_FILE")
+        [[ "$current_hour" != "$last_reset_hour" ]] && should_reset=true
     fi
 
-    # Reset counters if it's a new hour
-    if [[ "$current_hour" != "$last_reset_hour" ]]; then
+    if [[ "$should_reset" == "true" ]]; then
         echo "0" > "$CALL_COUNT_FILE"
         echo "0" > "$TOKEN_COUNT_FILE"
-        echo "$current_hour" > "$TIMESTAMP_FILE"
-        log_status "INFO" "Call and token counters reset for new hour: $current_hour"
+        if [[ "${RESET_WAIT_MINUTES:-0}" -gt 0 ]] 2>/dev/null; then
+            echo "$now_epoch" > "$TIMESTAMP_FILE"
+            log_status "INFO" "Call and token counters reset (RESET_WAIT_MINUTES=${RESET_WAIT_MINUTES}m window)"
+        else
+            echo "$(date +%Y%m%d%H)" > "$TIMESTAMP_FILE"
+            log_status "INFO" "Call and token counters reset for new hour: $(date +%Y%m%d%H)"
+        fi
     fi
 
     # Initialize exit signals tracking if it doesn't exist
@@ -876,12 +898,17 @@ wait_for_reset() {
     log_status "WARN" "Rate limit reached ($limit_reason). Waiting for reset..."
     send_notification "Ralph - Rate Limit" "Rate limit reached ($limit_reason). Waiting for reset..."
 
-    # Calculate time until next hour
-    local current_minute=$(date +%M)
-    local current_second=$(date +%S)
-    local wait_time=$(((60 - current_minute - 1) * 60 + (60 - current_second)))
-    
-    log_status "INFO" "Sleeping for $wait_time seconds until next hour..."
+    # Calculate time until reset
+    local wait_time
+    if [[ "${RESET_WAIT_MINUTES:-0}" -gt 0 ]] 2>/dev/null; then
+        wait_time=$((RESET_WAIT_MINUTES * 60))
+        log_status "INFO" "Sleeping for ${RESET_WAIT_MINUTES}m ($wait_time seconds) per RESET_WAIT_MINUTES config..."
+    else
+        local current_minute=$(date +%M)
+        local current_second=$(date +%S)
+        wait_time=$(((60 - current_minute - 1) * 60 + (60 - current_second)))
+        log_status "INFO" "Sleeping for $wait_time seconds until next hour..."
+    fi
     
     # Countdown display
     while [[ $wait_time -gt 0 ]]; do
@@ -898,7 +925,11 @@ wait_for_reset() {
     # Reset counters
     echo "0" > "$CALL_COUNT_FILE"
     echo "0" > "$TOKEN_COUNT_FILE"
-    echo "$(date +%Y%m%d%H)" > "$TIMESTAMP_FILE"
+    if [[ "${RESET_WAIT_MINUTES:-0}" -gt 0 ]] 2>/dev/null; then
+        echo "$(date +%s)" > "$TIMESTAMP_FILE"
+    else
+        echo "$(date +%Y%m%d%H)" > "$TIMESTAMP_FILE"
+    fi
     log_status "SUCCESS" "Rate limit reset! Ready for new calls."
 }
 

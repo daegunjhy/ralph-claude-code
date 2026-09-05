@@ -442,6 +442,7 @@ These keys have no CLI flag equivalent — they can only be set in `.ralphrc` or
 | `CLAUDE_AUTO_UPDATE` | `true` | Auto-check npm registry and update the Claude CLI at startup. Set `false` for Docker/air-gapped environments. |
 | `CLAUDE_MIN_VERSION` | `"2.0.76"` | Minimum Claude CLI version required. Ralph warns and exits if the installed version is older. |
 | `MAX_TOKENS_PER_HOUR` | `0` | Hourly token budget (`input + output`). `0` = disabled. Blocks further calls once exhausted; resets with the call counter on the hour. |
+| `RESET_WAIT_MINUTES` | `5` | Minutes to wait — and the counter-reset cadence — after a rate limit (`-c`/`MAX_CALLS_PER_HOUR` or `MAX_TOKENS_PER_HOUR`) is hit. `0` restores the original behavior: reset only on the wall-clock hour boundary, and wait until the top of the next hour when limited. |
 | `RALPH_VERBOSE` | `false` | Enable verbose progress logging. Equivalent to running with `--verbose`. |
 | `CB_NO_PROGRESS_THRESHOLD` | `3` | Open circuit breaker after N consecutive loops with no file changes. |
 | `CB_SAME_ERROR_THRESHOLD` | `5` | Open circuit breaker after N consecutive loops with the same error. |

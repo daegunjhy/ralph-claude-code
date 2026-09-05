@@ -324,3 +324,84 @@ EOF
     [[ "$output" == *"TOKEN_COUNT_FILE"* ]]
 }
 
+# =============================================================================
+# Configurable RESET_WAIT_MINUTES
+#
+# The original reset window is hardcoded to wall-clock hour boundaries: reset
+# on `date +%Y%m%d%H` change, wait "until the top of the next hour" on rate
+# limit. That means a rate limit hit at :01 past the hour waits ~59 minutes
+# even though the provider's actual limit window may be much shorter (or
+# configurable per plan). RESET_WAIT_MINUTES lets that wait — and the reset
+# cadence — be set explicitly; 0 preserves the original hour-boundary behavior
+# for anyone relying on it.
+# =============================================================================
+
+# should_reset_counters (extracted from ralph_loop.sh's init_call_tracking)
+should_reset_counters() {
+    local timestamp_file=$1
+    local now_epoch=$2
+
+    if [[ "${RESET_WAIT_MINUTES:-0}" -gt 0 ]] 2>/dev/null; then
+        local reset_window_secs=$((RESET_WAIT_MINUTES * 60))
+        local last_reset_epoch=0
+        if [[ -f "$timestamp_file" ]]; then
+            local raw_ts
+            raw_ts=$(cat "$timestamp_file" 2>/dev/null)
+            [[ "$raw_ts" =~ ^[0-9]{10}$ ]] && last_reset_epoch="$raw_ts"
+        fi
+        if [[ $last_reset_epoch -eq 0 ]] || (( now_epoch - last_reset_epoch >= reset_window_secs )); then
+            return 0
+        fi
+        return 1
+    fi
+
+    local current_hour=$(date +%Y%m%d%H)
+    local last_reset_hour=""
+    [[ -f "$timestamp_file" ]] && last_reset_hour=$(cat "$timestamp_file")
+    [[ "$current_hour" != "$last_reset_hour" ]]
+}
+
+@test "RESET_WAIT_MINUTES defaults to 5 when unset" {
+    run grep 'RESET_WAIT_MINUTES="\${RESET_WAIT_MINUTES:-5}"' "${BATS_TEST_DIRNAME}/../../ralph_loop.sh"
+    assert_success
+}
+
+@test "ralph_loop.sh restores RESET_WAIT_MINUTES from environment in load_ralphrc" {
+    run grep '_env_RESET_WAIT_MINUTES.*RESET_WAIT_MINUTES=' "${BATS_TEST_DIRNAME}/../../ralph_loop.sh"
+    assert_success
+}
+
+@test "should_reset_counters: RESET_WAIT_MINUTES=0 falls back to legacy hour-boundary reset" {
+    export RESET_WAIT_MINUTES=0
+    echo "$(date +%Y%m%d%H)" > "$TIMESTAMP_FILE"
+
+    run should_reset_counters "$TIMESTAMP_FILE" "$(date +%s)"
+    assert_failure  # same hour as last reset -> no reset yet
+}
+
+@test "should_reset_counters: window elapsed with RESET_WAIT_MINUTES>0 triggers reset" {
+    export RESET_WAIT_MINUTES=5
+    local now=$(date +%s)
+    echo "$((now - 301))" > "$TIMESTAMP_FILE"  # 5m1s ago, window = 300s
+
+    run should_reset_counters "$TIMESTAMP_FILE" "$now"
+    assert_success
+}
+
+@test "should_reset_counters: window not yet elapsed with RESET_WAIT_MINUTES>0 does not reset" {
+    export RESET_WAIT_MINUTES=5
+    local now=$(date +%s)
+    echo "$((now - 100))" > "$TIMESTAMP_FILE"  # 100s ago, window = 300s
+
+    run should_reset_counters "$TIMESTAMP_FILE" "$now"
+    assert_failure
+}
+
+@test "should_reset_counters: missing timestamp file always resets" {
+    export RESET_WAIT_MINUTES=5
+    rm -f "$TIMESTAMP_FILE"
+
+    run should_reset_counters "$TIMESTAMP_FILE" "$(date +%s)"
+    assert_success
+}
+
